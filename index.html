@@ -335,7 +335,7 @@ select.finp{cursor:pointer}
 <body>
 
 <!-- ══ SETUP ══ -->
-<div id="setup">
+<div id="setup" style="display:none">
   <div class="sbox">
     <h2>FITTRACK</h2>
     <p>Connect Supabase for cross-device sync, or use Demo Mode with local storage.</p>
@@ -361,7 +361,6 @@ select.finp{cursor:pointer}
   <div class="nav-spacer"></div>
   <div id="today-badge">–</div>
   <button class="nav-icon-btn nav-admin-btn" onclick="openAdmin()">⚙ Admin</button>
-  <button class="nav-icon-btn" onclick="document.getElementById('setup').classList.remove('off')">DB</button>
 </nav>
 
 <!-- ══ BOTTOM NAV (mobile) ══ -->
@@ -645,30 +644,23 @@ function makeDefaultEX(){return{
 // ════════════════════════════════════════
 //  SUPABASE
 // ════════════════════════════════════════
-function connectSB(){
-  const u=document.getElementById('sb-url').value.trim(),k=document.getElementById('sb-key').value.trim();
-  if(!u||!k){toast('Enter both URL and key');return;}
-  localStorage.setItem('ft_u',u);localStorage.setItem('ft_k',k);injectSB(u,k);
-}
+const SB_URL='https://uuoehqifkjkysegxgtjh.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1b2VocWlma2preXNlZ3hndGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2MzgxMzYsImV4cCI6MjA4ODIxNDEzNn0.pWrfDdaHeNEQOx0RzB7AFYvdmTCPrxNhtWhW6QKz7gs';
+
+function connectSB(){injectSB(SB_URL,SB_KEY);}
 function injectSB(u,k){
   const s=document.createElement('script');
   s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
-  s.onload=()=>{try{_sb=window.supabase.createClient(u,k);document.getElementById('setup').classList.add('off');toast('✓ Connected');boot();}catch(e){toast('Connection failed');}};
+  s.onload=()=>{try{_sb=window.supabase.createClient(u,k);boot();}catch(e){toast('Supabase connection failed');}};
   s.onerror=()=>toast('Could not load Supabase SDK');
   document.head.appendChild(s);
 }
-function demoMode(){document.getElementById('setup').classList.add('off');toast('Demo mode active');boot();}
+function demoMode(){toast('Running with local storage only');boot();}
 window.onload=()=>{
-  const u=localStorage.getItem('ft_u'),k=localStorage.getItem('ft_k');
-  if(u&&k){
-    document.getElementById('sb-url').value=u;document.getElementById('sb-key').value=k;
-    const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
-    s.onload=()=>{try{_sb=window.supabase.createClient(u,k);document.getElementById('setup').classList.add('off');boot();}catch(e){document.getElementById('setup').classList.remove('off');}};
-    document.head.appendChild(s);
-  }
+  document.getElementById('setup').classList.add('off');
   updateGreeting();setInterval(updateGreeting,60000);
   loadDay('A');buildQChips();
+  injectSB(SB_URL,SB_KEY);
 };
 function boot(){if(_sb){sbFood();sbWO();}renderDash();renderFoodLog();renderHist();}
 async function sbFood(){const{data}=await _sb.from('food_log').select('*').eq('date',td()).order('created_at');if(data){D.food=data;renderFoodLog();calcMacros();renderDash();}}
@@ -1187,7 +1179,7 @@ function clearFood2(){if(!confirm('Clear ALL food logs?'))return;D.food=[];local
 function clearWater(){if(!confirm('Clear water log?'))return;D.water={};localStorage.removeItem('ft_water');renderWater();toast('Water log cleared');}
 function factoryReset(){
   if(!confirm('FACTORY RESET — delete everything?'))return;
-  ['ft_wo','ft_food','ft_water','ft_goals','ft_sched','ft_ex','ft_gifs','ft_saved_foods','ft_u','ft_k'].forEach(k=>localStorage.removeItem(k));
+  ['ft_wo','ft_food','ft_water','ft_goals','ft_sched','ft_ex','ft_gifs','ft_saved_foods'].forEach(k=>localStorage.removeItem(k));
   location.reload();
 }
 </script>
