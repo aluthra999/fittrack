@@ -642,7 +642,7 @@ function makeDefaultEX(){return{
 };}
 
 // ════════════════════════════════════════
-//  SUPABASE
+//  SUPABASE — REAL-TIME SYNC
 // ════════════════════════════════════════
 const SB_URL='https://uuoehqifkjkysegxgtjh.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1b2VocWlma2preXNlZ3hndGpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2MzgxMzYsImV4cCI6MjA4ODIxNDEzNn0.pWrfDdaHeNEQOx0RzB7AFYvdmTCPrxNhtWhW6QKz7gs';
@@ -651,24 +651,136 @@ function connectSB(){injectSB(SB_URL,SB_KEY);}
 function injectSB(u,k){
   const s=document.createElement('script');
   s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
-  s.onload=()=>{try{_sb=window.supabase.createClient(u,k);boot();}catch(e){toast('Supabase connection failed');}};
-  s.onerror=()=>toast('Could not load Supabase SDK');
+  s.onload=()=>{
+    try{
+      _sb=window.supabase.createClient(u,k,{realtime:{params:{eventsPerSecond:10}}});
+      boot();
+    }catch(e){toast('Supabase connection failed');}
+  };
+  s.onerror=()=>{toast('Could not load Supabase SDK');bootLocal();};
   document.head.appendChild(s);
 }
-function demoMode(){toast('Running with local storage only');boot();}
+function demoMode(){toast('Running with local storage only');bootLocal();}
+
 window.onload=()=>{
   document.getElementById('setup').classList.add('off');
   updateGreeting();setInterval(updateGreeting,60000);
   loadDay('A');buildQChips();
   injectSB(SB_URL,SB_KEY);
 };
-function boot(){if(_sb){sbFood();sbWO();}renderDash();renderFoodLog();renderHist();}
-async function sbFood(){const{data}=await _sb.from('food_log').select('*').eq('date',td()).order('created_at');if(data){D.food=data;renderFoodLog();calcMacros();renderDash();}}
-async function sbWO(){const{data}=await _sb.from('workouts').select('*').order('date',{ascending:false}).limit(60);if(data){D.workouts=data;renderHist();renderDash();}}
-async function dbAddFood(i){if(!_sb)return;const{data}=await _sb.from('food_log').insert([i]).select();if(data?.[0])i.id=data[0].id;}
-async function dbDelFood(id){if(!_sb||String(id).startsWith('l_'))return;await _sb.from('food_log').delete().eq('id',id);}
-async function dbAddWO(w){if(!_sb)return;await _sb.from('workouts').insert([w]);}
-async function dbDelWO(id){if(!_sb||String(id).startsWith('l_'))return;await _sb.from('workouts').delete().eq('id',id);}
+
+// ── Boot: pull all data then subscribe to real-time changes ──
+async function boot(){
+  await Promise.all([pullFood(),pullWorkouts(),pullWater(),pullSettings()]);
+  renderDash();renderFoodLog();renderHist();renderWater();
+  subscribeAll();
+  toast('✓ Synced');
+}
+function bootLocal(){
+  renderDash();renderFoodLog();renderHist();renderWater();
+}
+
+// ── Initial pulls ──
+async function pullFood(){
+  const{data}=await _sb.from('food_log').select('*').order('created_at');
+  if(data){D.food=data;localStorage.setItem('ft_food',JSON.stringify(data.slice(-500)));}
+}
+async function pullWorkouts(){
+  const{data}=await _sb.from('workouts').select('*').order('date',{ascending:false}).limit(200);
+  if(data){D.workouts=data;localStorage.setItem('ft_wo',JSON.stringify(data));}
+}
+async function pullWater(){
+  const{data}=await _sb.from('water_log').select('*').order('date',{ascending:false}).limit(60);
+  if(data){
+    const w={};data.forEach(r=>w[r.date]=+r.liters);
+    D.water=w;localStorage.setItem('ft_water',JSON.stringify(w));
+  }
+}
+async function pullSettings(){
+  const{data}=await _sb.from('settings').select('*');
+  if(!data)return;
+  data.forEach(row=>{
+    try{
+      const v=row.value;
+      if(row.key==='goals'){GOALS={...GOALS,...v};localStorage.setItem('ft_goals',JSON.stringify(GOALS));}
+      if(row.key==='schedule'){SCHED={...SCHED,...v};localStorage.setItem('ft_sched',JSON.stringify(SCHED));}
+      if(row.key==='exercises'){EX={...EX,...v};localStorage.setItem('ft_ex',JSON.stringify(EX));}
+      if(row.key==='gifs'){GIF={...GIF,...v};localStorage.setItem('ft_gifs',JSON.stringify(GIF));}
+    }catch(e){}
+  });
+}
+
+// ── Real-time subscriptions ──
+function subscribeAll(){
+  // Food log
+  _sb.channel('food_log').on('postgres_changes',{event:'*',schema:'public',table:'food_log'},payload=>{
+    const{eventType,new:n,old:o}=payload;
+    if(eventType==='INSERT'){if(!D.food.find(f=>f.id==n.id))D.food.push(n);}
+    if(eventType==='DELETE'){D.food=D.food.filter(f=>f.id!=o.id);}
+    if(eventType==='UPDATE'){const i=D.food.findIndex(f=>f.id==n.id);if(i>=0)D.food[i]=n;}
+    localStorage.setItem('ft_food',JSON.stringify(D.food.slice(-500)));
+    renderFoodLog();calcMacros();renderDash();
+  }).subscribe();
+
+  // Workouts
+  _sb.channel('workouts').on('postgres_changes',{event:'*',schema:'public',table:'workouts'},payload=>{
+    const{eventType,new:n,old:o}=payload;
+    if(eventType==='INSERT'){if(!D.workouts.find(w=>w.id==n.id))D.workouts.unshift(n);}
+    if(eventType==='DELETE'){D.workouts=D.workouts.filter(w=>w.id!=o.id);}
+    if(eventType==='UPDATE'){const i=D.workouts.findIndex(w=>w.id==n.id);if(i>=0)D.workouts[i]=n;}
+    localStorage.setItem('ft_wo',JSON.stringify(D.workouts));
+    renderHist();renderDash();
+  }).subscribe();
+
+  // Water
+  _sb.channel('water_log').on('postgres_changes',{event:'*',schema:'public',table:'water_log'},payload=>{
+    const{eventType,new:n}=payload;
+    if(eventType==='DELETE')return;
+    D.water[n.date]=+n.liters;
+    localStorage.setItem('ft_water',JSON.stringify(D.water));
+    renderWater();renderDash();
+  }).subscribe();
+
+  // Settings (GIFs, goals, schedule, exercises)
+  _sb.channel('settings').on('postgres_changes',{event:'*',schema:'public',table:'settings'},payload=>{
+    const{new:n}=payload;
+    if(!n)return;
+    try{
+      const v=n.value;
+      if(n.key==='goals'){GOALS={...GOALS,...v};localStorage.setItem('ft_goals',JSON.stringify(GOALS));calcMacros();renderDash();}
+      if(n.key==='schedule'){SCHED={...SCHED,...v};localStorage.setItem('ft_sched',JSON.stringify(SCHED));renderDash();}
+      if(n.key==='exercises'){EX={...EX,...v};localStorage.setItem('ft_ex',JSON.stringify(EX));renderExList();}
+      if(n.key==='gifs'){GIF={...GIF,...v};localStorage.setItem('ft_gifs',JSON.stringify(GIF));}
+    }catch(e){}
+  }).subscribe();
+}
+
+// ── DB write helpers ──
+async function dbAddFood(item){
+  if(!_sb)return;
+  const{data}=await _sb.from('food_log').insert([{date:item.date,name:item.name,cal:item.cal,pro:item.pro,fat:item.fat,carb:item.carb}]).select();
+  if(data?.[0]){item.id=data[0].id;}
+}
+async function dbDelFood(id){
+  if(!_sb||String(id).startsWith('l_'))return;
+  await _sb.from('food_log').delete().eq('id',id);
+}
+async function dbAddWO(w){
+  if(!_sb)return;
+  await _sb.from('workouts').insert([{date:w.date,day_type:w.day_type,exercises:w.exercises,notes:w.notes}]);
+}
+async function dbDelWO(id){
+  if(!_sb||String(id).startsWith('l_'))return;
+  await _sb.from('workouts').delete().eq('id',id);
+}
+async function dbUpsertWater(date,liters){
+  if(!_sb)return;
+  await _sb.from('water_log').upsert({date,liters},{onConflict:'date'});
+}
+async function dbSaveSetting(key,value){
+  if(!_sb)return;
+  await _sb.from('settings').upsert({key,value,updated_at:new Date().toISOString()},{onConflict:'key'});
+}
 
 // ════════════════════════════════════════
 //  UTILS
@@ -707,7 +819,7 @@ function jumpWorkout(day){
 //  WATER
 // ════════════════════════════════════════
 function getWater(){return+(D.water[td()]||0);}
-function setWater(v){D.water[td()]=Math.max(0,Math.round(v*100)/100);localStorage.setItem('ft_water',JSON.stringify(D.water));renderWater();}
+function setWater(v){const val=Math.max(0,Math.round(v*100)/100);D.water[td()]=val;localStorage.setItem('ft_water',JSON.stringify(D.water));dbUpsertWater(td(),val);renderWater();}
 function addWater(delta){setWater(getWater()+delta);}
 function renderWater(){
   const cur=getWater(), goal=GOALS.water||2, pct=Math.min(cur/goal,1);
@@ -829,9 +941,15 @@ function saveCardio(){
   const dist=+document.getElementById('c-dist').value||0;
   const hr=+document.getElementById('c-hr').value||0;
   const notes=`${ex.name} ${dur}min${dist?' '+dist+'km':''}${hr?' @'+hr+'bpm':''}`;
-  const w={id:'l_'+Date.now(),date:td(),day_type:'CARDIO',exercises:JSON.stringify([{name:ex.name,sets:1,reps:dur+'min',completed:true}]),notes};
-  D.workouts.unshift(w);localStorage.setItem('ft_wo',JSON.stringify(D.workouts.slice(0,200)));
-  dbAddWO(w);toast('Cardio saved! 🏃');renderHist();renderDash();
+  const w={date:td(),day_type:'CARDIO',exercises:JSON.stringify([{name:ex.name,sets:1,reps:dur+'min',completed:true}]),notes};
+  if(_sb){
+    dbAddWO(w);
+  } else {
+    w.id='l_'+Date.now();
+    D.workouts.unshift(w);localStorage.setItem('ft_wo',JSON.stringify(D.workouts.slice(0,200)));
+    renderHist();renderDash();
+  }
+  toast('Cardio saved! 🏃');
 }
 function tapSet(id,i){
   const es=D.ex[id];es.sd=i<es.sd?i:i+1;
@@ -859,10 +977,16 @@ function startRest(s){
 }
 function closeRest(){clearInterval(RI);document.getElementById('rest-modal').classList.remove('on');}
 async function saveWorkout(){
-  const w={id:'l_'+Date.now(),date:td(),day_type:D.day,exercises:JSON.stringify((EX[D.day]||[]).map(e=>({name:e.name,sets:e.sets,reps:e.reps,completed:D.ex[e.id]?.done||false}))),notes:''};
-  D.workouts.unshift(w);localStorage.setItem('ft_wo',JSON.stringify(D.workouts.slice(0,200)));
-  await dbAddWO(w);document.getElementById('done-banner').classList.remove('on');
-  toast('Workout saved! 💪');renderHist();renderDash();
+  const w={date:td(),day_type:D.day,exercises:JSON.stringify((EX[D.day]||[]).map(e=>({name:e.name,sets:e.sets,reps:e.reps,completed:D.ex[e.id]?.done||false}))),notes:''};
+  document.getElementById('done-banner').classList.remove('on');
+  if(_sb){
+    await dbAddWO(w);
+  } else {
+    w.id='l_'+Date.now();
+    D.workouts.unshift(w);localStorage.setItem('ft_wo',JSON.stringify(D.workouts.slice(0,200)));
+    renderHist();renderDash();
+  }
+  toast('Workout saved! 💪');
 }
 
 // ════════════════════════════════════════
@@ -955,16 +1079,22 @@ function saveFoodToHistory(item){
 async function addFood(){
   const n=document.getElementById('f-name').value.trim();
   if(!n){toast('Enter a food name');return;}
-  const item={id:'l_'+Date.now(),date:td(),name:n,
+  const item={date:td(),name:n,
     cal:+document.getElementById('f-cal').value||0,
     pro:+document.getElementById('f-pro').value||0,
     fat:+document.getElementById('f-fat').value||0,
     carb:+document.getElementById('f-carb').value||0};
-  D.food.push(item);localStorage.setItem('ft_food',JSON.stringify(D.food.slice(-500)));
   saveFoodToHistory(item);
-  await dbAddFood(item);
   ['f-name','f-cal','f-pro','f-fat','f-carb'].forEach(id=>document.getElementById(id).value='');
-  renderFoodLog();calcMacros();renderDash();toast('Food logged!');
+  if(_sb){
+    // realtime subscription will update state automatically
+    await dbAddFood(item);
+  } else {
+    item.id='l_'+Date.now();
+    D.food.push(item);localStorage.setItem('ft_food',JSON.stringify(D.food.slice(-500)));
+    renderFoodLog();calcMacros();renderDash();
+  }
+  toast('Food logged!');
 }
 async function delFood(id){D.food=D.food.filter(f=>f.id!=id);localStorage.setItem('ft_food',JSON.stringify(D.food));await dbDelFood(id);renderFoodLog();calcMacros();renderDash();}
 function renderFoodLog(){
@@ -1080,7 +1210,7 @@ function addEx(day){
   EX[day].push({id,name:n,sets:+document.getElementById(`ns-${day}`).value||3,reps:document.getElementById(`nr-${day}`).value||'10 reps',icon:document.getElementById(`ni-${day}`).value||'💪',type:document.getElementById(`nt-${day}`).value||'reps',cue:document.getElementById(`nc-${day}`).value||'Focus on form',muscles:'',tips:[]});
   saveEX();renderAdminEx();renderExList();toast('Added!');
 }
-function saveEX(){localStorage.setItem('ft_ex',JSON.stringify(EX));}
+function saveEX(){localStorage.setItem('ft_ex',JSON.stringify(EX));dbSaveSetting('exercises',EX);}
 
 // ── Schedule ──
 function renderAdminSched(){
@@ -1090,7 +1220,7 @@ function renderAdminSched(){
         ${['A','B','CARDIO','REST'].map(v=>`<option value="${v}"${SCHED[d]===v?' selected':''}>${v}</option>`).join('')}
       </select></div>`).join('');
 }
-function saveSched(){DAYS.forEach(d=>SCHED[d]=document.getElementById(`sd-${d}`).value);localStorage.setItem('ft_sched',JSON.stringify(SCHED));renderDash();toast('Schedule saved!');}
+function saveSched(){DAYS.forEach(d=>SCHED[d]=document.getElementById(`sd-${d}`).value);localStorage.setItem('ft_sched',JSON.stringify(SCHED));dbSaveSetting('schedule',SCHED);renderDash();toast('Schedule saved!');}
 
 // ── Goals ──
 function renderAdminGoals(){
@@ -1102,11 +1232,11 @@ function saveGoals(){
   GOALS.cal=[+document.getElementById('gc-min').value||2200,+document.getElementById('gc-max').value||2400];
   GOALS.pro=+document.getElementById('gc-pro').value||130;GOALS.fat=+document.getElementById('gc-fat').value||70;
   GOALS.carb=+document.getElementById('gc-carb').value||225;
-  localStorage.setItem('ft_goals',JSON.stringify(GOALS));calcMacros();renderDash();toast('Goals saved!');
+  localStorage.setItem('ft_goals',JSON.stringify(GOALS));dbSaveSetting('goals',GOALS);calcMacros();renderDash();toast('Goals saved!');
 }
 function saveWaterGoal(){
   GOALS.water=+document.getElementById('gc-water').value||2;
-  localStorage.setItem('ft_goals',JSON.stringify(GOALS));renderWater();toast('Water goal saved!');
+  localStorage.setItem('ft_goals',JSON.stringify(GOALS));dbSaveSetting('goals',GOALS);renderWater();toast('Water goal saved!');
 }
 
 // ── GIF Manager (URL + File Upload) ──
@@ -1136,6 +1266,7 @@ function handleGifUpload(id,inp){
   reader.onload=e=>{
     GIF[id]=e.target.result;
     localStorage.setItem('ft_gifs',JSON.stringify(GIF));
+    dbSaveSetting('gifs',GIF);
     const p=document.getElementById(`gp-${id}`);
     p.innerHTML=`<img src="${GIF[id]}" alt="preview">`;
     const inp2=document.getElementById(`gi-${id}`);
@@ -1147,7 +1278,7 @@ function handleGifUpload(id,inp){
 function saveGifUrls(){
   const all=[];['A','B','CARDIO'].forEach(d=>(EX[d]||[]).forEach(e=>all.push(e)));
   all.forEach(e=>{const v=document.getElementById(`gi-${e.id}`);if(v&&v.value.trim()&&!v.value.startsWith('['))GIF[e.id]=v.value.trim();});
-  localStorage.setItem('ft_gifs',JSON.stringify(GIF));toast('URLs saved!');
+  localStorage.setItem('ft_gifs',JSON.stringify(GIF));dbSaveSetting('gifs',GIF);toast('URLs saved!');
 }
 
 // ── Saved Foods ──
@@ -1174,9 +1305,24 @@ function renderAdminData(){
   if(!last20.length)fe.innerHTML='<p style="color:var(--muted);font-size:.78rem">No food logged.</p>';
   else fe.innerHTML=last20.map(f=>`<div class="arow"><div class="arow-name">${f.name}</div><div class="arow-detail" style="font-family:var(--fm);font-size:.68rem">${f.cal} kcal · ${f.pro}g P</div><div style="font-size:.66rem;color:var(--muted);margin-right:5px">${f.date}</div><button class="abtn del" onclick="delFood('${f.id}');renderAdminData()">Del</button></div>`).join('');
 }
-function clearWO(){if(!confirm('Delete ALL workout history?'))return;D.workouts=[];localStorage.removeItem('ft_wo');renderHist();renderDash();renderAdminData();toast('Cleared');}
-function clearFood2(){if(!confirm('Clear ALL food logs?'))return;D.food=[];localStorage.removeItem('ft_food');renderFoodLog();calcMacros();renderDash();renderAdminData();toast('Cleared');}
-function clearWater(){if(!confirm('Clear water log?'))return;D.water={};localStorage.removeItem('ft_water');renderWater();toast('Water log cleared');}
+function clearWO(){
+  if(!confirm('Delete ALL workout history?'))return;
+  D.workouts=[];localStorage.removeItem('ft_wo');
+  if(_sb)_sb.from('workouts').delete().neq('id',0).then(()=>{});
+  renderHist();renderDash();renderAdminData();toast('Cleared');
+}
+function clearFood2(){
+  if(!confirm('Clear ALL food logs?'))return;
+  D.food=[];localStorage.removeItem('ft_food');
+  if(_sb)_sb.from('food_log').delete().neq('id',0).then(()=>{});
+  renderFoodLog();calcMacros();renderDash();renderAdminData();toast('Cleared');
+}
+function clearWater(){
+  if(!confirm('Clear water log?'))return;
+  D.water={};localStorage.removeItem('ft_water');
+  if(_sb)_sb.from('water_log').delete().neq('id',0).then(()=>{});
+  renderWater();toast('Water log cleared');
+}
 function factoryReset(){
   if(!confirm('FACTORY RESET — delete everything?'))return;
   ['ft_wo','ft_food','ft_water','ft_goals','ft_sched','ft_ex','ft_gifs','ft_saved_foods'].forEach(k=>localStorage.removeItem(k));
